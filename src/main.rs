@@ -20,6 +20,7 @@ const EASTER_EGGS: &[&str] = &[
     " - made with something",
     " - made with cars",
     " - made with dry wall",
+    " - made with chocolate milk",
 ];
 
 fn get_random_easter_egg(show_easter_eggs: bool) -> String {
