@@ -71,14 +71,3 @@ Edit this file to add your Subsonic server details:
 ### General
 - **?** - Show help menu
 - **q** or **Escape** - Quit app
-
-## Project Structure
-
-```
-src/
-├── main.rs      - Main application entry point
-├── client.rs     - Subsonic API client
-├── config.rs     - Configuration management
-├── types.rs      - Type definitions
-└── tui.rs        - Terminal UI implementation
-```
