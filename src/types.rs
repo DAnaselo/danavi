@@ -34,6 +34,9 @@ pub struct Song {
     pub id: String,
     pub title: String,
     pub album_id: Option<String>,
+    pub artist: Option<String>,
+    pub album: Option<String>,
+    pub duration: Option<i64>,
 }
 
 #[derive(Debug, Clone)]
@@ -50,6 +53,8 @@ pub enum SearchResultItem {
         title: String,
         artist: String,
         album_id: String,
+        album: Option<String>,
+        duration: Option<i64>,
     },
 }
 
@@ -134,6 +139,11 @@ pub struct SongData {
     pub id: String,
     pub title: String,
     pub album_id: Option<String>,
+    pub artist: Option<String>,
+    #[allow(dead_code)]
+    pub album: Option<String>,
+    #[serde(default)]
+    pub duration: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -166,6 +176,9 @@ pub struct SearchSong {
     pub artist: String,
     #[serde(rename = "albumId")]
     pub album_id: String,
+    pub album: Option<String>,
+    #[serde(default)]
+    pub duration: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]

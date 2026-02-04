@@ -65,6 +65,14 @@ impl AudioPlayer {
     pub fn is_finished(&self) -> bool {
         self.sink.empty()
     }
+
+    pub fn set_volume(&self, volume: f64) {
+        self.sink.set_volume(volume as f32);
+    }
+
+    pub fn get_volume(&self) -> f64 {
+        self.sink.volume() as f64
+    }
 }
 
 impl Default for AudioPlayer {

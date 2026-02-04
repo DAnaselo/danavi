@@ -1,6 +1,7 @@
 mod audio;
 mod client;
 mod config;
+mod mpris;
 mod tui;
 mod types;
 
@@ -8,8 +9,11 @@ use anyhow::{Context, Result};
 use audio::AudioPlayer;
 use client::SubsonicClient;
 use config::{config_needs_edit, get_config_path, load_config};
+use mpris::{MprisCommand, MprisServer, PlaybackStatus};
 use std::io;
+use std::sync::Arc;
 use std::time::Instant;
+use tokio::sync::{mpsc, RwLock};
 use tui::{Action, App, Tui};
 use types::*;
 
@@ -97,6 +101,9 @@ async fn load_songs(
             id: s.id,
             title: s.title,
             album_id: s.album_id,
+            artist: s.artist,
+            album: Some(response.album.name.clone()),
+            duration: s.duration,
         })
         .collect();
 
@@ -115,6 +122,7 @@ async fn handle_select(
     app: &mut App,
     config: &types::Config,
     audio_player: &AudioPlayer,
+    mpris_state: &Arc<RwLock<mpris::MprisState>>,
 ) -> Result<()> {
     let selected = app.get_selected_index();
     if selected.is_none() {
@@ -142,7 +150,7 @@ async fn handle_select(
         ViewType::Songs => {
             if let Some(song) = app.songs.get(idx) {
                 let song = song.clone();
-                play_song(client, app, song, audio_player).await?;
+                play_song(client, app, song, audio_player, mpris_state).await?;
             }
         }
         ViewType::Search => {
@@ -156,13 +164,16 @@ async fn handle_select(
                         app.current_view = ViewType::Songs;
                         load_songs(client, app, &id_clone, config).await?;
                     }
-                    SearchResultItem::Song { id, title, .. } => {
+                    SearchResultItem::Song { id, title, artist, album_id, .. } => {
                         let song = Song {
                             id: id.clone(),
                             title: title.clone(),
-                            album_id: None,
+                            album_id: Some(album_id.clone()),
+                            artist: Some(artist.clone()),
+                            album: None,
+                            duration: None,
                         };
-                        play_song(client, app, song, audio_player).await?;
+                        play_song(client, app, song, audio_player, mpris_state).await?;
                     }
                 }
             }
@@ -176,6 +187,7 @@ async fn play_song(
     app: &mut App,
     song: Song,
     audio_player: &AudioPlayer,
+    mpris_state: &Arc<RwLock<mpris::MprisState>>,
 ) -> Result<()> {
     app.show_message(format!("Playing: {}", song.title), 2000);
 
@@ -199,6 +211,20 @@ async fn play_song(
         .play_bytes(bytes)
         .context("Failed to play audio")?;
 
+    // Update MPRIS state
+    {
+        let mut state = mpris_state.write().await;
+        state.playback_status = PlaybackStatus::Playing;
+        state.current_song = Some(mpris::Song {
+            id: song.id.clone(),
+            title: song.title.clone(),
+            artist: song.artist.clone(),
+            album: song.album.clone(),
+            duration: song.duration,
+        });
+        state.current_song_url = Some(url);
+    }
+
     // Note: Queue continuation would need to be handled through a callback or channel
     // For now, playback will stop when the song ends
 
@@ -209,10 +235,17 @@ async fn play_next_in_queue(
     client: &SubsonicClient,
     app: &mut App,
     audio_player: &AudioPlayer,
+    mpris_state: &Arc<RwLock<mpris::MprisState>>,
 ) -> Result<()> {
     if !app.queue.is_empty() {
         let song = app.queue.remove(0);
-        play_song(client, app, song, audio_player).await?;
+        play_song(client, app, song, audio_player, mpris_state).await?;
+    } else {
+        // No more songs in queue - update MPRIS state to stopped
+        let mut state = mpris_state.write().await;
+        state.playback_status = PlaybackStatus::Stopped;
+        state.current_song = None;
+        state.current_song_url = None;
     }
     Ok(())
 }
@@ -239,6 +272,16 @@ async fn main() -> Result<()> {
     let audio_player = AudioPlayer::new()
         .context("Failed to initialize audio player. Make sure audio output is available.")?;
 
+    // Initialize MPRIS server
+    let (mpris_command_tx, mut mpris_command_rx) = mpsc::unbounded_channel::<MprisCommand>();
+    let (_mpris_server, mpris_state) = MprisServer::new(mpris_command_tx).await?;
+    
+    // Set initial volume in MPRIS state
+    {
+        let mut state = mpris_state.write().await;
+        state.volume = audio_player.get_volume();
+    }
+
     let mut app = App::new();
     let mut tui = Tui::new()?;
 
@@ -262,11 +305,76 @@ async fn main() -> Result<()> {
             last_message_check = Instant::now();
         }
 
+        // Handle MPRIS commands
+        while let Ok(command) = mpris_command_rx.try_recv() {
+            match command {
+                MprisCommand::Play => {
+                    if audio_player.is_paused() {
+                        audio_player.toggle_pause();
+                        let mut state = mpris_state.write().await;
+                        state.playback_status = PlaybackStatus::Playing;
+                    } else if !app.queue.is_empty() {
+                        let _ = play_next_in_queue(&client, &mut app, &audio_player, &mpris_state).await;
+                    }
+                }
+                MprisCommand::Pause => {
+                    if !audio_player.is_paused() && !audio_player.is_finished() {
+                        audio_player.toggle_pause();
+                        let mut state = mpris_state.write().await;
+                        state.playback_status = PlaybackStatus::Paused;
+                    }
+                }
+                MprisCommand::PlayPause => {
+                    audio_player.toggle_pause();
+                    let mut state = mpris_state.write().await;
+                    if audio_player.is_paused() {
+                        state.playback_status = PlaybackStatus::Paused;
+                    } else if !audio_player.is_finished() {
+                        state.playback_status = PlaybackStatus::Playing;
+                    }
+                }
+                MprisCommand::Stop => {
+                    audio_player.stop();
+                    let mut state = mpris_state.write().await;
+                    state.playback_status = PlaybackStatus::Stopped;
+                }
+                MprisCommand::Next => {
+                    if !app.queue.is_empty() {
+                        let _ = play_next_in_queue(&client, &mut app, &audio_player, &mpris_state).await;
+                    }
+                }
+                MprisCommand::Previous => {
+                    // For simplicity, we restart the current song if playing
+                    // In a more complete implementation, we'd track history
+                }
+                MprisCommand::SetVolume(volume) => {
+                    audio_player.set_volume(volume.clamp(0.0, 1.0));
+                    let mut state = mpris_state.write().await;
+                    state.volume = volume.clamp(0.0, 1.0);
+                }
+                _ => {}
+            }
+        }
+
+        // Check if audio finished playing
+        if !audio_player.is_paused() && audio_player.is_finished() {
+            let state = mpris_state.read().await;
+            if state.playback_status == PlaybackStatus::Playing {
+                drop(state);
+                if !app.queue.is_empty() {
+                    let _ = play_next_in_queue(&client, &mut app, &audio_player, &mpris_state).await;
+                } else {
+                    let mut state = mpris_state.write().await;
+                    state.playback_status = PlaybackStatus::Stopped;
+                }
+            }
+        }
+
         if let Some(action) = tui.handle_event(&mut app)? {
             match action {
                 tui::Action::Quit => break,
                 Action::Select => {
-                    if let Err(e) = handle_select(&client, &mut app, &config, &audio_player).await {
+                    if let Err(e) = handle_select(&client, &mut app, &config, &audio_player, &mpris_state).await {
                         app.show_message(format!("Error: {}", e), 3000);
                     }
                 }
@@ -288,11 +396,14 @@ async fn main() -> Result<()> {
                             }
                             ViewType::Search => {
                                 if let Some(result) = app.search_results.get(idx) {
-                                    if let SearchResultItem::Song { id, title, .. } = result {
+                                    if let SearchResultItem::Song { id, title, artist, album_id, .. } = result {
                                         app.queue.push(Song {
                                             id: id.clone(),
                                             title: title.clone(),
-                                            album_id: None,
+                                            album_id: Some(album_id.clone()),
+                                            artist: Some(artist.clone()),
+                                            album: None,
+                                            duration: None,
                                         });
                                         app.show_message(
                                             format!(
@@ -310,7 +421,7 @@ async fn main() -> Result<()> {
                     }
                 }
                 Action::PlayNext => {
-                    if let Err(e) = play_next_in_queue(&client, &mut app, &audio_player).await {
+                    if let Err(e) = play_next_in_queue(&client, &mut app, &audio_player, &mpris_state).await {
                         app.show_message(format!("Error: {}", e), 3000);
                     }
                 }
@@ -318,7 +429,7 @@ async fn main() -> Result<()> {
                     if !app.queue.is_empty() {
                         // Stop current playback
                         audio_player.stop();
-                        if let Err(e) = play_next_in_queue(&client, &mut app, &audio_player).await {
+                        if let Err(e) = play_next_in_queue(&client, &mut app, &audio_player, &mpris_state).await {
                             app.show_message(format!("Error: {}", e), 3000);
                         }
                     }
@@ -329,6 +440,15 @@ async fn main() -> Result<()> {
                         app.show_message("Paused".to_string(), 1500);
                     } else {
                         app.show_message("Resumed".to_string(), 1500);
+                    }
+                    // Update MPRIS state
+                    {
+                        let mut state = mpris_state.write().await;
+                        if audio_player.is_paused() {
+                            state.playback_status = PlaybackStatus::Paused;
+                        } else {
+                            state.playback_status = PlaybackStatus::Playing;
+                        }
                     }
                 }
                 Action::Search => {
@@ -358,6 +478,8 @@ async fn main() -> Result<()> {
                                             title: song.title,
                                             artist: song.artist,
                                             album_id: song.album_id,
+                                            album: song.album,
+                                            duration: song.duration,
                                         });
                                     }
                                 }
