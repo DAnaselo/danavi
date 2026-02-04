@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock};
-use zbus::interface;
+use zbus::{interface, Connection, object_server::SignalContext};
 use zvariant::{ObjectPath, Str, Value};
 
 const MPRIS_BUS_NAME: &str = "org.mpris.MediaPlayer2.danavi";
@@ -311,10 +311,8 @@ impl RootInterface {
 }
 
 pub struct MprisServer {
-    #[allow(dead_code)]
-    connection: zbus::Connection,
-    #[allow(dead_code)]
     state: Arc<RwLock<MprisState>>,
+    connection: Connection,
 }
 
 impl MprisServer {
@@ -333,28 +331,58 @@ impl MprisServer {
             .build()
             .await?;
 
-        Ok((Self { connection, state: state.clone() }, state))
+        Ok((Self { state: state.clone(), connection }, state))
     }
 
-    #[allow(dead_code)]
     pub async fn update_playback_status(&self, status: PlaybackStatus) -> anyhow::Result<()> {
         let mut state = self.state.write().await;
+        let old_status = state.playback_status.clone();
         state.playback_status = status;
+        drop(state);
+        
+        // Emit PropertiesChanged signal for PlaybackStatus
+        if old_status != status {
+            let object_server = self.connection.object_server();
+            if let Ok(iface_ref) = object_server.interface::<_, PlayerInterface>(MPRIS_OBJECT_PATH).await {
+                let ctxt = SignalContext::new(&self.connection, MPRIS_OBJECT_PATH)?;
+                iface_ref.get().await.playback_status_changed(&ctxt).await?;
+            }
+        }
+        
         Ok(())
     }
 
-    #[allow(dead_code)]
     pub async fn update_current_song(&self, song: Option<Song>, url: Option<String>) -> anyhow::Result<()> {
         let mut state = self.state.write().await;
         state.current_song = song;
         state.current_song_url = url;
+        drop(state);
+        
+        // Emit PropertiesChanged signal for Metadata
+        let object_server = self.connection.object_server();
+        if let Ok(iface_ref) = object_server.interface::<_, PlayerInterface>(MPRIS_OBJECT_PATH).await {
+            let ctxt = SignalContext::new(&self.connection, MPRIS_OBJECT_PATH)?;
+            iface_ref.get().await.metadata_changed(&ctxt).await?;
+        }
+        
         Ok(())
     }
 
-    #[allow(dead_code)]
     pub async fn update_volume(&self, volume: f64) -> anyhow::Result<()> {
         let mut state = self.state.write().await;
+        let old_volume = state.volume;
         state.volume = volume;
+        drop(state);
+        
+        // Emit PropertiesChanged signal for Volume
+        if (old_volume - volume).abs() > f64::EPSILON {
+            let object_server = self.connection.object_server();
+            if let Ok(iface_ref) = object_server.interface::<_, PlayerInterface>(MPRIS_OBJECT_PATH).await {
+                let ctxt = SignalContext::new(&self.connection, MPRIS_OBJECT_PATH)?;
+                iface_ref.get().await.volume_changed(&ctxt).await?;
+            }
+        }
+        
         Ok(())
     }
 }
