@@ -150,7 +150,12 @@ async fn handle_select(
         ViewType::Songs => {
             if let Some(song) = app.songs.get(idx) {
                 let song = song.clone();
-                play_song(client, app, song, audio_player, mpris_state).await?;
+                // When playing from Songs view, set up album continuation
+                let source = PlaybackSource::Album {
+                    album_songs: app.songs.clone(),
+                    current_index: idx,
+                };
+                play_song(client, app, song, audio_player, mpris_state, source).await?;
             }
         }
         ViewType::Search => {
@@ -173,7 +178,7 @@ async fn handle_select(
                             album: None,
                             duration: None,
                         };
-                        play_song(client, app, song, audio_player, mpris_state).await?;
+                        play_song(client, app, song, audio_player, mpris_state, PlaybackSource::Search).await?;
                     }
                 }
             }
@@ -188,6 +193,7 @@ async fn play_song(
     song: Song,
     audio_player: &AudioPlayer,
     mpris_state: &Arc<RwLock<mpris::MprisState>>,
+    source: PlaybackSource,
 ) -> Result<()> {
     app.show_message(format!("Playing: {}", song.title), 2000);
 
@@ -225,8 +231,8 @@ async fn play_song(
         state.current_song_url = Some(url);
     }
 
-    // Note: Queue continuation would need to be handled through a callback or channel
-    // For now, playback will stop when the song ends
+    // Track the playback source
+    app.current_playback_source = Some(source);
 
     Ok(())
 }
@@ -239,13 +245,89 @@ async fn play_next_in_queue(
 ) -> Result<()> {
     if !app.queue.is_empty() {
         let song = app.queue.remove(0);
-        play_song(client, app, song, audio_player, mpris_state).await?;
+        play_song(client, app, song, audio_player, mpris_state, PlaybackSource::Queue).await?;
     } else {
         // No more songs in queue - update MPRIS state to stopped
         let mut state = mpris_state.write().await;
         state.playback_status = PlaybackStatus::Stopped;
         state.current_song = None;
         state.current_song_url = None;
+    }
+    Ok(())
+}
+
+async fn play_next_in_album(
+    client: &SubsonicClient,
+    app: &mut App,
+    audio_player: &AudioPlayer,
+    mpris_state: &Arc<RwLock<mpris::MprisState>>,
+    album_songs: &[Song],
+    current_index: usize,
+) -> Result<()> {
+    let next_index = current_index + 1;
+    if next_index < album_songs.len() {
+        let next_song = album_songs[next_index].clone();
+        play_song(
+            client,
+            app,
+            next_song,
+            audio_player,
+            mpris_state,
+            PlaybackSource::Album {
+                album_songs: album_songs.to_vec(),
+                current_index: next_index,
+            },
+        )
+        .await?;
+    } else {
+        // Album finished - clear playback source and stop
+        app.current_playback_source = None;
+        let mut state = mpris_state.write().await;
+        state.playback_status = PlaybackStatus::Stopped;
+        state.current_song = None;
+        state.current_song_url = None;
+    }
+    Ok(())
+}
+
+async fn play_previous_in_album(
+    client: &SubsonicClient,
+    app: &mut App,
+    audio_player: &AudioPlayer,
+    mpris_state: &Arc<RwLock<mpris::MprisState>>,
+    album_songs: &[Song],
+    current_index: usize,
+) -> Result<()> {
+    if current_index > 0 {
+        let prev_index = current_index - 1;
+        let prev_song = album_songs[prev_index].clone();
+        play_song(
+            client,
+            app,
+            prev_song,
+            audio_player,
+            mpris_state,
+            PlaybackSource::Album {
+                album_songs: album_songs.to_vec(),
+                current_index: prev_index,
+            },
+        )
+        .await?;
+    } else {
+        // At first song - restart it
+        let current_song = album_songs[current_index].clone();
+        play_song(
+            client,
+            app,
+            current_song,
+            audio_player,
+            mpris_state,
+            PlaybackSource::Album {
+                album_songs: album_songs.to_vec(),
+                current_index,
+            },
+        )
+        .await?;
     }
     Ok(())
 }
@@ -341,11 +423,43 @@ async fn main() -> Result<()> {
                 MprisCommand::Next => {
                     if !app.queue.is_empty() {
                         let _ = play_next_in_queue(&client, &mut app, &audio_player, &mpris_state).await;
+                    } else if let Some(source) = app.current_playback_source.take() {
+                        match source {
+                            PlaybackSource::Album { album_songs, current_index } => {
+                                let _ = play_next_in_album(&client, &mut app, &audio_player, &mpris_state, &album_songs, current_index).await;
+                            }
+                            _ => {
+                                // For other sources, just stop
+                                let mut state = mpris_state.write().await;
+                                state.playback_status = PlaybackStatus::Stopped;
+                            }
+                        }
                     }
                 }
                 MprisCommand::Previous => {
-                    // For simplicity, we restart the current song if playing
-                    // In a more complete implementation, we'd track history
+                    if let Some(source) = app.current_playback_source.take() {
+                        match source {
+                            PlaybackSource::Album { album_songs, current_index } => {
+                                let _ = play_previous_in_album(&client, &mut app, &audio_player, &mpris_state, &album_songs, current_index).await;
+                            }
+                            _ => {
+                                // For other sources, restart current song if available
+                                let state = mpris_state.read().await;
+                                if let Some(current_song) = state.current_song.as_ref() {
+                                    let song = Song {
+                                        id: current_song.id.clone(),
+                                        title: current_song.title.clone(),
+                                        artist: current_song.artist.clone(),
+                                        album: current_song.album.clone(),
+                                        duration: current_song.duration,
+                                        album_id: None,
+                                    };
+                                    drop(state);
+                                    let _ = play_song(&client, &mut app, song, &audio_player, &mpris_state, source).await;
+                                }
+                            }
+                        }
+                    }
                 }
                 MprisCommand::SetVolume(volume) => {
                     audio_player.set_volume(volume.clamp(0.0, 1.0));
@@ -362,7 +476,20 @@ async fn main() -> Result<()> {
             if state.playback_status == PlaybackStatus::Playing {
                 drop(state);
                 if !app.queue.is_empty() {
+                    // Queue takes priority - play next in queue
                     let _ = play_next_in_queue(&client, &mut app, &audio_player, &mpris_state).await;
+                } else if let Some(source) = app.current_playback_source.take() {
+                    // Check if we should continue based on playback source
+                    match source {
+                        PlaybackSource::Album { album_songs, current_index } => {
+                            let _ = play_next_in_album(&client, &mut app, &audio_player, &mpris_state, &album_songs, current_index).await;
+                        }
+                        _ => {
+                            // For Search, Queue (already handled), or Other sources - stop playback
+                            let mut state = mpris_state.write().await;
+                            state.playback_status = PlaybackStatus::Stopped;
+                        }
+                    }
                 } else {
                     let mut state = mpris_state.write().await;
                     state.playback_status = PlaybackStatus::Stopped;

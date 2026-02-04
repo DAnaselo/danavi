@@ -492,7 +492,7 @@ dependencies = [
 
 [[package]]
 name = "danavi"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "anyhow",
  "crossterm 0.28.1",

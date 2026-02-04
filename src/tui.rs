@@ -41,6 +41,7 @@ pub struct App {
     pub in_search: bool,
     pub help_open: bool,
     pub current_base_content: String,
+    pub current_playback_source: Option<PlaybackSource>,
 }
 
 impl App {
@@ -64,6 +65,7 @@ impl App {
             in_search: false,
             help_open: false,
             current_base_content: "Artists".to_string(),
+            current_playback_source: None,
         }
     }
 

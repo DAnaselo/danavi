@@ -66,6 +66,17 @@ pub enum ViewType {
     Search,
 }
 
+#[derive(Debug, Clone)]
+pub enum PlaybackSource {
+    Queue,
+    Album {
+        album_songs: Vec<Song>,
+        current_index: usize,
+    },
+    Search,
+    Other,
+}
+
 // API Response types
 #[derive(Debug, Deserialize)]
 #[allow(dead_code)]
