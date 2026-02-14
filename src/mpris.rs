@@ -31,6 +31,7 @@ pub struct Song {
     pub title: String,
     pub artist: Option<String>,
     pub album: Option<String>,
+    pub album_artist: Option<String>,
     pub duration: Option<i64>,
 }
 
@@ -100,10 +101,20 @@ impl PlayerInterface {
             );
             
             if let Some(artist) = &song.artist {
-                let artist_values: Vec<Value> = vec![Value::Str(Str::from(artist.clone()))];
+                let artist_str = Str::from(artist.clone());
+                let artist_array = zvariant::Array::from(vec![artist_str]);
                 metadata.insert(
                     "xesam:artist".to_string(),
-                    Value::Array(artist_values.into()),
+                    Value::Array(artist_array),
+                );
+            }
+            
+            // Use album_artist if available, otherwise fall back to track artist
+            let album_artist = song.album_artist.as_ref().or(song.artist.as_ref());
+            if let Some(album_artist) = album_artist {
+                metadata.insert(
+                    "xesam:albumArtist".to_string(),
+                    Value::Array(zvariant::Array::from(vec![Str::from(album_artist.clone())])),
                 );
             }
             

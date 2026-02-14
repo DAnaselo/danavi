@@ -36,6 +36,7 @@ pub struct Song {
     pub album_id: Option<String>,
     pub artist: Option<String>,
     pub album: Option<String>,
+    pub album_artist: Option<String>,
     pub duration: Option<i64>,
 }
 
@@ -142,6 +143,7 @@ pub struct AlbumDetail {
     #[allow(dead_code)]
     pub id: String,
     pub name: String,
+    pub artist: Option<String>,
     pub song: Vec<SongData>,
 }
 

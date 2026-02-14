@@ -92,6 +92,7 @@ async fn load_songs(
     config: &types::Config,
 ) -> Result<()> {
     let response = client.get_album(album_id).await?;
+    let album_artist = response.album.artist.clone();
     app.songs = response
         .album
         .song
@@ -102,6 +103,7 @@ async fn load_songs(
             album_id: s.album_id,
             artist: s.artist,
             album: Some(response.album.name.clone()),
+            album_artist: album_artist.clone(),
             duration: s.duration,
         })
         .collect();
@@ -168,13 +170,14 @@ async fn handle_select(
                         app.current_view = ViewType::Songs;
                         load_songs(client, app, &id_clone, config).await?;
                     }
-                    SearchResultItem::Song { id, title, artist, album_id, .. } => {
+                    SearchResultItem::Song { id, title, artist, album_id, album, .. } => {
                         let song = Song {
                             id: id.clone(),
                             title: title.clone(),
                             album_id: Some(album_id.clone()),
                             artist: Some(artist.clone()),
-                            album: None,
+                            album: album.clone(),
+                            album_artist: None, // Will fall back to track artist in MPRIS
                             duration: None,
                         };
                         play_song(client, app, song, audio_player, mpris_server, PlaybackSource::Search).await?;
@@ -223,6 +226,7 @@ async fn play_song(
             title: song.title.clone(),
             artist: song.artist.clone(),
             album: song.album.clone(),
+            album_artist: song.album_artist.clone(),
             duration: song.duration,
         }),
         Some(url),
@@ -431,12 +435,13 @@ async fn main() -> Result<()> {
                             _ => {
                                 // For other sources, restart current song if available
                                 let state = mpris_state.read().await;
-                                if let Some(current_song) = state.current_song.as_ref() {
+                                    if let Some(current_song) = state.current_song.as_ref() {
                                     let song = Song {
                                         id: current_song.id.clone(),
                                         title: current_song.title.clone(),
                                         artist: current_song.artist.clone(),
                                         album: current_song.album.clone(),
+                                        album_artist: current_song.album_artist.clone(),
                                         duration: current_song.duration,
                                         album_id: None,
                                     };
@@ -507,14 +512,15 @@ async fn main() -> Result<()> {
                             }
                             ViewType::Search => {
                                 if let Some(result) = app.search_results.get(idx) {
-                                    if let SearchResultItem::Song { id, title, artist, album_id, .. } = result {
+                                    if let SearchResultItem::Song { id, title, artist, album_id, album, duration, .. } = result {
                                         app.queue.push(Song {
                                             id: id.clone(),
                                             title: title.clone(),
                                             album_id: Some(album_id.clone()),
                                             artist: Some(artist.clone()),
-                                            album: None,
-                                            duration: None,
+                                            album: album.clone(),
+                                            album_artist: None,
+                                            duration: *duration,
                                         });
                                         app.show_message(
                                             format!(
