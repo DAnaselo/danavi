@@ -1,6 +1,5 @@
 use crate::types::Config;
 use anyhow::{Context, Result};
-use dirs;
 use serde::Deserialize;
 use std::fs;
 use std::path::PathBuf;

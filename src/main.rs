@@ -71,7 +71,6 @@ async fn load_albums(
         .map(|a| Album {
             id: a.id,
             name: a.name,
-            artist_id: a.artist_id,
         })
         .collect();
 
@@ -100,7 +99,6 @@ async fn load_songs(
         .map(|s| Song {
             id: s.id,
             title: s.title,
-            album_id: s.album_id,
             artist: s.artist,
             album: Some(response.album.name.clone()),
             album_artist: album_artist.clone(),
@@ -170,14 +168,13 @@ async fn handle_select(
                         app.current_view = ViewType::Songs;
                         load_songs(client, app, &id_clone, config).await?;
                     }
-                    SearchResultItem::Song { id, title, artist, album_id, album, .. } => {
+                    SearchResultItem::Song { id, title, artist, album, .. } => {
                         let song = Song {
                             id: id.clone(),
                             title: title.clone(),
-                            album_id: Some(album_id.clone()),
                             artist: Some(artist.clone()),
                             album: album.clone(),
-                            album_artist: None, // Will fall back to track artist in MPRIS
+                            album_artist: None,
                             duration: None,
                         };
                         play_song(client, app, song, audio_player, mpris_server, PlaybackSource::Search).await?;
@@ -199,27 +196,14 @@ async fn play_song(
 ) -> Result<()> {
     app.show_message(format!("Playing: {}", song.title), 2000);
 
-    let url = client.get_stream_url(&song.id);
-
-    let response = reqwest::get(&url)
-        .await
-        .context("Failed to fetch audio stream")?;
-
-    if !response.status().is_success() {
-        anyhow::bail!("Server returned error: {}", response.status());
-    }
-
-    let bytes = response
-        .bytes()
-        .await
-        .context("Failed to read audio data")?
-        .to_vec();
+    let bytes = client.stream_song(&song.id).await?;
 
     audio_player
         .play_bytes(bytes)
         .context("Failed to play audio")?;
 
     // Update MPRIS state and emit PropertiesChanged signal
+    let stream_url = format!("{}/rest/stream?id={}", client.base_url, song.id);
     mpris_server.update_current_song(
         Some(mpris::Song {
             id: song.id.clone(),
@@ -229,7 +213,7 @@ async fn play_song(
             album_artist: song.album_artist.clone(),
             duration: song.duration,
         }),
-        Some(url),
+        Some(stream_url),
     ).await?;
     mpris_server.update_playback_status(PlaybackStatus::Playing).await?;
 
@@ -393,11 +377,9 @@ async fn main() -> Result<()> {
                         let _ = play_next_in_queue(&client, &mut app, &audio_player, &mpris_server).await;
                     }
                 }
-                MprisCommand::Pause => {
-                    if !audio_player.is_paused() && !audio_player.is_finished() {
-                        audio_player.toggle_pause();
-                        let _ = mpris_server.update_playback_status(PlaybackStatus::Paused).await;
-                    }
+                MprisCommand::Pause if !audio_player.is_paused() && !audio_player.is_finished() => {
+                    audio_player.toggle_pause();
+                    let _ = mpris_server.update_playback_status(PlaybackStatus::Paused).await;
                 }
                 MprisCommand::PlayPause => {
                     audio_player.toggle_pause();
@@ -443,7 +425,6 @@ async fn main() -> Result<()> {
                                         album: current_song.album.clone(),
                                         album_artist: current_song.album_artist.clone(),
                                         duration: current_song.duration,
-                                        album_id: None,
                                     };
                                     drop(state);
                                     let _ = play_song(&client, &mut app, song, &audio_player, &mpris_server, source).await;
@@ -476,7 +457,7 @@ async fn main() -> Result<()> {
                             let _ = play_next_in_album(&client, &mut app, &audio_player, &mpris_server, &album_songs, current_index).await;
                         }
                         _ => {
-                            // For Search, Queue (already handled), or Other sources - stop playback
+                            // For Search or Queue (already handled) sources - stop playback
                             let _ = mpris_server.update_playback_status(PlaybackStatus::Stopped).await;
                         }
                     }
@@ -511,26 +492,23 @@ async fn main() -> Result<()> {
                                 }
                             }
                             ViewType::Search => {
-                                if let Some(result) = app.search_results.get(idx) {
-                                    if let SearchResultItem::Song { id, title, artist, album_id, album, duration, .. } = result {
-                                        app.queue.push(Song {
-                                            id: id.clone(),
-                                            title: title.clone(),
-                                            album_id: Some(album_id.clone()),
-                                            artist: Some(artist.clone()),
-                                            album: album.clone(),
-                                            album_artist: None,
-                                            duration: *duration,
-                                        });
-                                        app.show_message(
-                                            format!(
-                                                "Added to queue: {} (Queue: {})",
-                                                title,
-                                                app.queue.len()
-                                            ),
-                                            1500,
-                                        );
-                                    }
+                                if let Some(SearchResultItem::Song { id, title, artist, album, duration, .. }) = app.search_results.get(idx) {
+                                    app.queue.push(Song {
+                                        id: id.clone(),
+                                        title: title.clone(),
+                                        artist: Some(artist.clone()),
+                                        album: album.clone(),
+                                        album_artist: None,
+                                        duration: *duration,
+                                    });
+                                    app.show_message(
+                                        format!(
+                                            "Added to queue: {} (Queue: {})",
+                                            title,
+                                            app.queue.len()
+                                        ),
+                                        1500,
+                                    );
                                 }
                             }
                             _ => {}
@@ -587,7 +565,6 @@ async fn main() -> Result<()> {
                                             id: song.id,
                                             title: song.title,
                                             artist: song.artist,
-                                            album_id: song.album_id,
                                             album: song.album,
                                             duration: song.duration,
                                         });

@@ -163,12 +163,11 @@ impl Tui {
     }
 
     pub fn handle_event(&mut self, app: &mut App) -> Result<Option<Action>> {
-        if event::poll(std::time::Duration::from_millis(100))? {
-            if let Event::Key(key) = event::read()? {
-                if key.kind == KeyEventKind::Press {
-                    return Ok(handle_key(key, app));
-                }
-            }
+        if event::poll(std::time::Duration::from_millis(100))?
+            && let Event::Key(key) = event::read()?
+            && key.kind == KeyEventKind::Press
+        {
+            return Ok(handle_key(key, app));
         }
         Ok(None)
     }
@@ -274,17 +273,13 @@ fn handle_key(key: KeyEvent, app: &mut App) -> Option<Action> {
         KeyCode::Char('n') => {
             return Some(Action::PlayNext);
         }
-        KeyCode::Char('r') => {
-            if !app.queue.is_empty() {
-                app.queue.remove(0);
-                app.show_message("Removed from queue".to_string(), 1500);
-            }
+        KeyCode::Char('r') if !app.queue.is_empty() => {
+            app.queue.remove(0);
+            app.show_message("Removed from queue".to_string(), 1500);
         }
-        KeyCode::Char('c') => {
-            if !app.queue.is_empty() {
-                app.queue.clear();
-                app.show_message("Queue cleared".to_string(), 1500);
-            }
+        KeyCode::Char('c') if !app.queue.is_empty() => {
+            app.queue.clear();
+            app.show_message("Queue cleared".to_string(), 1500);
         }
         KeyCode::Char('p') => {
             return Some(Action::RestartQueue);

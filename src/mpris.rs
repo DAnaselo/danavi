@@ -26,7 +26,6 @@ impl PlaybackStatus {
 
 #[derive(Debug, Clone)]
 pub struct Song {
-    #[allow(dead_code)]
     pub id: String,
     pub title: String,
     pub artist: Option<String>,
@@ -67,10 +66,8 @@ pub enum MprisCommand {
     Stop,
     Next,
     Previous,
-    #[allow(dead_code)]
-    Seek(i64),
-    #[allow(dead_code)]
-    SetPosition(i64),
+    Seek,
+    SetPosition,
     SetVolume(f64),
 }
 
@@ -177,13 +174,13 @@ impl PlayerInterface {
     }
 
     #[zbus(name = "Seek")]
-    async fn seek(&self, offset: i64) {
-        let _ = self.command_sender.send(MprisCommand::Seek(offset));
+    async fn seek(&self, _offset: i64) {
+        let _ = self.command_sender.send(MprisCommand::Seek);
     }
 
     #[zbus(name = "SetPosition")]
-    async fn set_position(&self, _track_id: ObjectPath<'_>, position: i64) {
-        let _ = self.command_sender.send(MprisCommand::SetPosition(position));
+    async fn set_position(&self, _track_id: ObjectPath<'_>, _position: i64) {
+        let _ = self.command_sender.send(MprisCommand::SetPosition);
     }
 
     #[zbus(name = "OpenUri")]
@@ -347,7 +344,7 @@ impl MprisServer {
 
     pub async fn update_playback_status(&self, status: PlaybackStatus) -> anyhow::Result<()> {
         let mut state = self.state.write().await;
-        let old_status = state.playback_status.clone();
+        let old_status = state.playback_status;
         state.playback_status = status;
         drop(state);
         

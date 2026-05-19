@@ -1,6 +1,5 @@
 use crate::types::*;
 use anyhow::{Context, Result};
-use md5;
 use rand::Rng;
 use reqwest::Client;
 use serde_json::Value;
@@ -11,7 +10,7 @@ const CLIENT_NAME: &str = "danavi";
 const VERSION: &str = "1.16.1";
 
 pub struct SubsonicClient {
-    base_url: String,
+    pub base_url: String,
     username: String,
     password: String,
     client: Client,
@@ -95,16 +94,6 @@ impl SubsonicClient {
         }
     }
 
-    /// Pings the server to check connectivity
-    /// Useful for testing the connection
-    /// Make Break ;)
-    #[allow(dead_code)]
-    pub async fn ping(&self) -> Result<()> {
-        let params = HashMap::new();
-        self.api_call("ping", &params).await?;
-        Ok(())
-    }
-
     pub async fn get_artists(&self) -> Result<ArtistsResponse> {
         let params = HashMap::new();
         let response = self.api_call("getArtists", &params).await?;
@@ -141,15 +130,43 @@ impl SubsonicClient {
         serde_json::from_value(response).context("Failed to parse search response")
     }
 
-    /// Generates a streaming URL for a song
-    /// This is used for audio playback
-    #[allow(dead_code)] // Will be used when audio playback is implemented
-    pub fn get_stream_url(&self, id: &str) -> String {
+    pub async fn stream_song(&self, id: &str) -> Result<Vec<u8>> {
         let salt = self.generate_salt();
         let token = self.generate_token(&salt);
-        format!(
-            "{}/rest/stream?id={}&u={}&t={}&s={}&v={}&c={}&f=mp3",
-            self.base_url, id, self.username, token, salt, VERSION, CLIENT_NAME
-        )
+
+        let mut url = Url::parse(&format!("{}/rest/stream", self.base_url))
+            .context("Invalid base URL")?;
+
+        url.query_pairs_mut()
+            .append_pair("id", id)
+            .append_pair("u", &self.username)
+            .append_pair("t", &token)
+            .append_pair("s", &salt)
+            .append_pair("v", VERSION)
+            .append_pair("c", CLIENT_NAME)
+            .append_pair("format", "mp3");
+
+        let response = self
+            .client
+            .get(url.as_str())
+            .send()
+            .await
+            .context("Failed to send stream request")?;
+
+        if !response.status().is_success() {
+            anyhow::bail!("Server returned error: {}", response.status());
+        }
+
+        let bytes = response
+            .bytes()
+            .await
+            .context("Failed to read audio data")?
+            .to_vec();
+
+        if bytes.is_empty() {
+            anyhow::bail!("Server returned empty audio data");
+        }
+
+        Ok(bytes)
     }
 }

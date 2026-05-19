@@ -15,7 +15,6 @@ A terminal-based music client for Navidrome/Subsonic servers, written in Rust.
 - rust
 - ffmpeg
 - playerctl
-- pipewire-alsa
 
 ### Install/Build Commands
 
